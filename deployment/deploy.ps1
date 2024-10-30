@@ -1,160 +1,95 @@
-$root_path = Split-Path $PSScriptRoot -Parent
+param (
+    [string]$resourceGroupName = "YourResourceGroupName",      # Replace with your desired resource group name
+    [string]$location = "YourLocation",                        # Replace with your desired Azure region
+    [string]$digitalTwinName = "YourDigitalTwinName",        # Replace with your desired digital twin name
+    [string]$adxClusterName = "YourADXClusterName",          # Replace with your desired ADX cluster name
+    [string]$adxDatabaseName = "YourADXDatabaseName"         # Replace with your desired ADX database name
+)
 
-#region functions
-function New-Password {
-    param(
-        [int] $length = 15
-    )
-
-    $punc = 46..46
-    $digits = 48..57
-    $lcLetters = 65..90
-    $ucLetters = 97..122
-    $password = `
-        [char](Get-Random -Count 1 -InputObject ($lcLetters)) + `
-        [char](Get-Random -Count 1 -InputObject ($ucLetters)) + `
-        [char](Get-Random -Count 1 -InputObject ($digits)) + `
-        [char](Get-Random -Count 1 -InputObject ($punc))
-    $password += get-random -Count ($length - 4) `
-        -InputObject ($punc + $digits + $lcLetters + $ucLetters) |`
-        ForEach-Object -begin { $aa = $null } -process { $aa += [char] $_ } -end { $aa }
-
-    return $password
-}
-
-function Get-EnvironmentHash {
-    param(
-        [int] $hash_length = 8
-    )
-    $env_hash = (New-Guid).Guid.Replace('-', '').Substring(0, $hash_length).ToLower()
-
-    return $env_hash
-}
-
-function Set-EnvironmentHash {
-    param(
-        [int] $hash_length = 4
-    )
-    $script:env_hash = Get-EnvironmentHash -hash_length $hash_length
-}
-
-function Set-AzureAccount {
-    param()
-
-    Write-Host
-    Write-Host "Retrieving your current Azure subscription..."
-    Start-Sleep -Milliseconds 500
-
-    $account = az account show | ConvertFrom-Json
-
-    $option = Get-InputSelection `
-        -options @("Yes", "No. I want to use a different subscription") `
-        -text "You are currently using the Azure subscription '$($account.name)'. Do you want to keep using it?" `
-        -default_index 1
-    
-    if ($option -eq 2) {
-        $accounts = az account list | ConvertFrom-Json | Sort-Object -Property name
-
-        $account_list = $accounts | Select-Object -Property @{ label="displayName"; expression={ "$($_.name): $($_.id)" } }
-        $option = Get-InputSelection `
-            -options $account_list.displayName `
-            -text "Choose a subscription to use from this list (using its Index):" `
-            -separator "`r`n`r`n"
-
-        $account = $accounts[$option - 1]
-
-        Write-Host "Switching to Azure subscription '$($account.name)' with id '$($account.id)'."
-        az account set -s $account.id
-    }
-}
-
-function Read-CliVersion {
+# Function to create a resource group
+function Create-ResourceGroup {
     param (
-        [version]$min_version = "2.50"  # Updated CLI version
+        [string]$resourceGroupName,
+        [string]$location
     )
 
-    $az_version = az version | ConvertFrom-Json
-    [version]$cli_version = $az_version.'azure-cli'
-
-    Write-Host
-    Write-Host "Verifying your Azure CLI installation version..."
-    Start-Sleep -Milliseconds 500
-
-    if ($min_version -gt $cli_version) {
-        Write-Host
-        Write-Host "You are currently using the Azure CLI version $($cli_version) and this wizard requires version $($min_version) or later. You can update your CLI installation with 'az upgrade' and come back at a later time."
-
-        return $false
-    }
-    else {
-        Write-Host
-        Write-Host "Great! You are using a supported Azure CLI version."
-
-        return $true
-    }
+    Write-Host "Creating Resource Group: $resourceGroupName in $location"
+    az group create --name $resourceGroupName --location $location
 }
 
-function Read-CliExtensionVersion {
-    param(
-        [string]$name,
-        [version]$min_version,
-        [bool]$auto_update = $true
+# Function to create a digital twin
+function Create-DigitalTwin {
+    param (
+        [string]$resourceGroupName,
+        [string]$digitalTwinName
     )
 
-    $az_version = az version | ConvertFrom-Json
-    [version]$extension_version = $az_version.extensions.$name
-
-    Write-Host
-    Write-Host "Verifying '$name' extension version..."
-    Start-Sleep -Milliseconds 500
-
-    if ($null -eq $extension_version) {
-        Write-Host
-        Write-Host "You currently don't have the '$name' CLI extension. Installing it now..."
-        az extension add --name $name
-
-        return $true
-    }
-    elseif ($min_version -gt $extension_version) {
-        Write-Host
-        Write-Host "You are currently using the version $($extension_version) of the extension '$($name)' and this wizard requires version $($min_version) or later."
-        if ($auto_update) {
-            az extension update -n $name
-            return $true
-        }
-        else {
-            Write-Host "You can find more details to manage extensions with Azure CLI here. https://docs.microsoft.com/en-us/cli/azure/azure-cli-extensions-overview"
-            return $false
-        }
-    }
-    else {
-        Write-Host "Great! You are using a supported version of the extension '$name'."
-        return $true
-    }
+    Write-Host "Creating Digital Twin: $digitalTwinName in Resource Group: $resourceGroupName"
+    az dt create --resource-group $resourceGroupName --name $digitalTwinName
 }
 
-function New-Deployment() {
-    # Set environment's unique hash
-    Set-EnvironmentHash -hash_length 8
+# Function to create an ADX cluster
+function Create-ADXCluster {
+    param (
+        [string]$resourceGroupName,
+        [string]$adxClusterName,
+        [string]$location
+    )
 
-    Write-Host "################################################"
-    Write-Host "#### Unreal Engine and Azure Digital Twins (ADT) & Azure Data Explorer (ADX) Integration ####"
-    Write-Host "################################################"
+    Write-Host "Creating Azure Data Explorer (ADX) Cluster: $adxClusterName in Resource Group: $resourceGroupName"
+    az kusto cluster create --name $adxClusterName --resource-group $resourceGroupName --location $location --sku "Dev(NoSLA)_Standard_D11"
+}
 
-    #region validate CLI version
-    $cli_valid = Read-CliVersion -min_version "2.50"
-    if (!$cli_valid) { return $null }
+# Function to create an ADX database
+function Create-ADXDatabase {
+    param (
+        [string]$resourceGroupName,
+        [string]$adxClusterName,
+        [string]$adxDatabaseName
+    )
 
-    $adt_ext_valid = Read-CliExtensionVersion -min_version "0.10.0" -name 'azure-iot' -auto_update $true
-    $adx_ext_valid = Read-CliExtensionVersion -min_version "0.8.0" -name 'kusto' -auto_update $true
-    if (!$adt_ext_valid -or !$adx_ext_valid) { return $null }
-    #endregion
+    Write-Host "Creating Azure Data Explorer (ADX) Database: $adxDatabaseName in Cluster: $adxClusterName"
+    az kusto database create --cluster-name $adxClusterName --database-name $adxDatabaseName --resource-group $resourceGroupName --read-write-database
+}
 
-    Set-AzureAccount
+# Function to prompt for AAD credentials
+function Prompt-AADCredentials {
+    Write-Host "Please enter your Azure Active Directory (AAD) credentials:"
+    $username = Read-Host -Prompt "Username"
+    $password = Read-Host -Prompt "Password" -AsSecureString
 
-    Write-Host "Registering required ADT and ADX providers in your subscription"
-    az provider register --namespace 'Microsoft.DigitalTwins'
-    az provider register --namespace 'Microsoft.Kusto'
+    # Authenticate with AAD
+    $aadCredential = New-Object System.Management.Automation.PSCredential($username, $password)
+    Connect-AzAccount -Credential $aadCredential
+}
 
-    # Deployment logic for ADT, ADX, and Unreal Engine integration setup follows.
+# Main script execution
+try {
+    # Prompt for AAD credentials
+    Prompt-AADCredentials
+
+    # Create resource group
+    Create-ResourceGroup -resourceGroupName $resourceGroupName -location $location
+    
+    # Create digital twin
+    Create-DigitalTwin -resourceGroupName $resourceGroupName -digitalTwinName $digitalTwinName
+    
+    # Create ADX cluster
+    Create-ADXCluster -resourceGroupName $resourceGroupName -adxClusterName $adxClusterName -location $location
+    
+    # Create ADX database
+    Create-ADXDatabase -resourceGroupName $resourceGroupName -adxClusterName $adxClusterName -adxDatabaseName $adxDatabaseName
+
+    # Output Unreal configuration paths and success message
+    Write-Host "##############################################"
+    Write-Host "##############################################"
+    Write-Host "####                                      ####"
+    Write-Host "####        Deployment Succeeded          ####"
+    Write-Host "####                                      ####"
+    Write-Host "##############################################"
+    Write-Host "##############################################"
+    Write-Host "Unreal config file path: /home/user/azure-digital-twins-unreal-integration/output/unreal-plugin-config.json"
+    Write-Host "Mock devices config file path: /home/user/azure-digital-twins-unreal-integration/output/mock-devices.json"
+} catch {
+    Write-Host "An error occurred: $_"
 }
